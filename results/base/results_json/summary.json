@@ -1,0 +1,14 @@
+{
+  "num_images": 300,
+  "total_pred_boxes": 7535,
+  "total_valid_gt_boxes": 7220,
+  "total_matched_boxes": 5015,
+  "match_rate_over_pred": 0.6655607166556071,
+  "match_rate_over_gt": 0.6945983379501385,
+  "CER_mean": 0.16287942920046608,
+  "ExactMatch_rate": 0.7024925224327019,
+  "vietocr_config": "vgg_transformer",
+  "crop_margin": 4,
+  "crop_height": 64,
+  "preprocess": false
+}
