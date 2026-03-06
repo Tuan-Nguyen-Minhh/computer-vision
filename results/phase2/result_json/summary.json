@@ -1,0 +1,24 @@
+{
+  "num_images": 300,
+  "total_pred_boxes_before_refine": 46837,
+  "total_pred_boxes_after_refine": 7200,
+  "total_valid_gt_boxes": 7220,
+  "total_matched_boxes": 5005,
+  "match_rate_over_pred": 0.6951388888888889,
+  "match_rate_over_gt": 0.693213296398892,
+  "CER_mean": 0.1621917731508141,
+  "ExactMatch_rate": 0.7034965034965035,
+  "vietocr_config": "vgg_transformer",
+  "crop_margin": 4,
+  "crop_height": 64,
+  "preprocess": false,
+  "phase": "phase2_box_postprocess",
+  "box_postprocess": {
+    "conf_thr": 0.25,
+    "min_w": 8.0,
+    "min_h": 8.0,
+    "min_area": 80.0,
+    "nms_iou_thr": 0.4
+  },
+  "match_iou_thr": 0.5
+}
