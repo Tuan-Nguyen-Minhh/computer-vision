@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Tuple
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 from vietocr.tool.predictor import Predictor
 from vietocr.tool.config import Cfg
@@ -59,10 +59,6 @@ def exact_match(pred: str, gt: str) -> int:
 # Geometry
 # =========================
 def polygon_iou(poly1: List[List[int]], poly2: List[List[int]]) -> float:
-    """
-    Polygon IoU by rasterization using OpenCV.
-    Works fine for quadrilaterals in this task.
-    """
     p1 = np.array(poly1, dtype=np.float32)
     p2 = np.array(poly2, dtype=np.float32)
 
@@ -95,10 +91,6 @@ def polygon_iou(poly1: List[List[int]], poly2: List[List[int]]) -> float:
 
 
 def order_quad_points(pts: np.ndarray) -> np.ndarray:
-    """
-    Order 4 points as:
-    top-left, top-right, bottom-right, bottom-left
-    """
     pts = pts.astype(np.float32)
     s = pts.sum(axis=1)
     d = np.diff(pts, axis=1).reshape(-1)
@@ -200,12 +192,6 @@ def refine_pred_boxes(
     min_area: float = 80.0,
     nms_iou_thr: float = 0.3,
 ) -> Tuple[List[List[List[int]]], List[float]]:
-    """
-    Instance-level box post-processing:
-    1) filter by confidence
-    2) filter by size / area
-    3) polygon NMS
-    """
     candidates = []
     for poly, conf in zip(pred_polys, pred_confs):
         if conf < conf_thr:
@@ -217,7 +203,6 @@ def refine_pred_boxes(
 
         candidates.append((poly, conf))
 
-    # sort by confidence desc
     candidates.sort(key=lambda x: x[1], reverse=True)
 
     kept_polys = []
@@ -244,11 +229,6 @@ def greedy_match_predictions_to_gt(
     gt_items: List[Dict[str, Any]],
     iou_thr: float = 0.5
 ) -> List[Tuple[int, int, float]]:
-    """
-    One-to-one greedy matching by IoU descending.
-    Ignore GT entries with ignore=True.
-    Returns: (pred_idx, gt_idx, iou)
-    """
     candidates = []
     for pi, p in enumerate(pred_polys):
         for gi, gt in enumerate(gt_items):
@@ -275,6 +255,47 @@ def greedy_match_predictions_to_gt(
 
 
 # =========================
+# Visualization Khắc phục lỗi ??? 
+# =========================
+def draw_evaluation_labels(img_bgr: np.ndarray, labels_info: list, font_path: str = "Roboto-Regular.ttf") -> np.ndarray:
+    if not labels_info:
+        return img_bgr
+
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(img_rgb).convert("RGBA")
+    draw = ImageDraw.Draw(pil_img)
+
+    try:
+        font = ImageFont.truetype(font_path, 14) 
+    except IOError:
+        print(f"[CẢNH BÁO] Không tìm thấy font '{font_path}'.")
+        font = ImageFont.load_default()
+
+    for poly, text in labels_info:
+        pts = np.array(poly, dtype=np.int32)
+        x_min, y_min = int(np.min(pts[:, 0])), int(np.min(pts[:, 1]))
+        x_max, y_max = int(np.max(pts[:, 0])), int(np.max(pts[:, 1]))
+
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+
+        pad = 4
+        text_x = x_min
+        text_y = y_min - text_h - (pad * 2)
+
+        if text_y < 0:
+            text_y = y_max + 2
+
+        bg_rect = [text_x, text_y, text_x + text_w + (pad * 2), text_y + text_h + (pad * 2)]
+        draw.rectangle(bg_rect, fill=(0, 0, 0, 180))
+        draw.text((text_x + pad, text_y + pad - 2), text, font=font, fill=(255, 255, 255, 255))
+
+    final_img = pil_img.convert("RGB")
+    return cv2.cvtColor(np.array(final_img), cv2.COLOR_RGB2BGR)
+
+
+# =========================
 # Main evaluation
 # =========================
 def evaluate(
@@ -291,6 +312,7 @@ def evaluate(
     min_area: float = 80.0,
     nms_iou_thr: float = 0.3,
     save_debug_dir: str = None,
+    font_path: str = "Roboto-Regular.ttf"
 ) -> None:
     with open(gt_json_path, "r", encoding="utf-8") as f:
         gt_data = json.load(f)
@@ -329,7 +351,6 @@ def evaluate(
         total_gt_valid += len(valid_gt_items)
 
         result = model(img_path, conf=0.001, verbose=False)[0]
-        # để tự mình post-process, lấy rộng hơn một chút
 
         pred_polys = []
         pred_confs = []
@@ -368,6 +389,7 @@ def evaluate(
         image_ems = []
 
         debug_vis = img.copy() if save_debug_dir else None
+        labels_to_draw = [] # Tập hợp nhãn để vẽ bằng PIL
 
         for match_idx, (pi, gi, iou) in enumerate(matches):
             pred_poly = pred_polys[pi]
@@ -397,18 +419,9 @@ def evaluate(
                 cv2.polylines(debug_vis, [pred_contour], True, (0, 255, 0), 2)   # pred xanh lá
                 cv2.polylines(debug_vis, [gt_contour], True, (255, 0, 0), 2)     # gt xanh dương
 
-                label = f"P:{pred_text} | G:{gt_text} | IoU:{iou:.2f}"
-                x, y = pred_poly[0]
-                cv2.putText(
-                    debug_vis,
-                    label,
-                    (x, max(15, y - 5)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45,
-                    (0, 0, 255),
-                    1,
-                    cv2.LINE_AA
-                )
+                # Chỉ in chữ dự đoán để ảnh gọn gàng hơn
+                label = pred_text
+                labels_to_draw.append((pred_poly, label))
 
                 crop_path = os.path.join(
                     save_debug_dir,
@@ -416,13 +429,15 @@ def evaluate(
                 )
                 cv2.imwrite(crop_path, crop)
 
+        # Vẽ toàn bộ text bằng PIL
         if debug_vis is not None:
+            debug_vis = draw_evaluation_labels(debug_vis, labels_to_draw, font_path)
             vis_path = os.path.join(save_debug_dir, f"{os.path.splitext(img_name)[0]}_vis.jpg")
             cv2.imwrite(vis_path, debug_vis)
 
         per_image_results.append({
             "image": img_name,
-            "num_pred_before_refine": int(len(pred_confs) + (len(pred_polys) - len(pred_confs)) if False else 0),  # placeholder removed below
+            "num_pred_before_refine": int(len(pred_confs) + (len(pred_polys) - len(pred_confs)) if False else 0),
             "num_pred_after_refine": len(pred_polys),
             "num_gt_valid": len(valid_gt_items),
             "num_matches": len(matches),
@@ -430,7 +445,6 @@ def evaluate(
             "exact_match_rate": float(np.mean(image_ems)) if image_ems else None,
         })
 
-        # sửa num_pred_before_refine cho record hiện tại
         per_image_results[-1]["num_pred_before_refine"] = int(
             len(result.obb.xyxyxyxy) if (result.obb is not None and result.obb.xyxyxyxy is not None) else 0
         )
@@ -505,6 +519,7 @@ def main():
     parser.add_argument("--nms_iou_thr", type=float, default=0.3, help="Polygon NMS IoU threshold")
 
     parser.add_argument("--save_debug_dir", default=None, help="Folder to save debug visualizations")
+    parser.add_argument("--font", default="Roboto-Regular.ttf", help="Font file path (.ttf) for rendering Vietnamese text")
     args = parser.parse_args()
 
     evaluate(
@@ -521,6 +536,7 @@ def main():
         min_area=args.min_area,
         nms_iou_thr=args.nms_iou_thr,
         save_debug_dir=args.save_debug_dir,
+        font_path=args.font
     )
 
 

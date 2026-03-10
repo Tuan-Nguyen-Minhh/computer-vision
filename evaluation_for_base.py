@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Tuple
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 from vietocr.tool.predictor import Predictor
 from vietocr.tool.config import Cfg
@@ -18,7 +18,6 @@ def normalize_text(s: str) -> str:
     s = s.strip()
     s = " ".join(s.split())
     return s
-
 
 def levenshtein(a: str, b: str) -> int:
     n, m = len(a), len(b)
@@ -42,14 +41,12 @@ def levenshtein(a: str, b: str) -> int:
             prev = cur
     return dp[m]
 
-
 def cer(pred: str, gt: str) -> float:
     pred = normalize_text(pred)
     gt = normalize_text(gt)
     if len(gt) == 0:
         return 0.0 if len(pred) == 0 else 1.0
     return levenshtein(pred, gt) / max(1, len(gt))
-
 
 def exact_match(pred: str, gt: str) -> int:
     return int(normalize_text(pred) == normalize_text(gt))
@@ -89,12 +86,7 @@ def polygon_iou(poly1: List[List[int]], poly2: List[List[int]]) -> float:
         return 0.0
     return float(inter) / float(union)
 
-
 def order_quad_points(pts: np.ndarray) -> np.ndarray:
-    """
-    Order 4 points as:
-    top-left, top-right, bottom-right, bottom-left
-    """
     pts = pts.astype(np.float32)
     s = pts.sum(axis=1)
     d = np.diff(pts, axis=1).reshape(-1)
@@ -106,13 +98,7 @@ def order_quad_points(pts: np.ndarray) -> np.ndarray:
 
     return np.array([tl, tr, br, bl], dtype=np.float32)
 
-
-def warp_polygon_crop(
-    img: np.ndarray,
-    poly: List[List[int]],
-    out_h: int = 64,
-    margin: int = 4
-) -> np.ndarray:
+def warp_polygon_crop(img: np.ndarray, poly: List[List[int]], out_h: int = 64, margin: int = 4) -> np.ndarray:
     pts = np.array(poly, dtype=np.float32)
     pts = order_quad_points(pts)
 
@@ -138,11 +124,7 @@ def warp_polygon_crop(
     ], dtype=np.float32)
 
     M = cv2.getPerspectiveTransform(pts, dst)
-    warped = cv2.warpPerspective(
-        img, M, (out_w, out_h),
-        flags=cv2.INTER_CUBIC,
-        borderMode=cv2.BORDER_REPLICATE
-    )
+    warped = cv2.warpPerspective(img, M, (out_w, out_h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
     return warped
 
 
@@ -151,8 +133,6 @@ def warp_polygon_crop(
 # =========================
 def load_vietocr_predictor(model_name: str = "vgg_transformer"):
     config = Cfg.load_config_from_name(model_name)
-
-    # ưu tiên pretrained mạnh hơn
     config["cnn"]["pretrained"] = True
     config["predictor"]["beamsearch"] = True
 
@@ -163,7 +143,6 @@ def load_vietocr_predictor(model_name: str = "vgg_transformer"):
         config["device"] = "cpu"
 
     return Predictor(config)
-
 
 def run_ocr_vietocr(img: np.ndarray, detector) -> str:
     if img.ndim == 2:
@@ -183,10 +162,6 @@ def greedy_match_predictions_to_gt(
     gt_items: List[Dict[str, Any]],
     iou_thr: float = 0.5
 ) -> List[Tuple[int, int, float]]:
-    """
-    One-to-one greedy matching by IoU descending.
-    Ignore GT entries with ignore=True.
-    """
     candidates = []
     for pi, p in enumerate(pred_polys):
         for gi, gt in enumerate(gt_items):
@@ -213,6 +188,50 @@ def greedy_match_predictions_to_gt(
 
 
 # =========================
+# Visualization Khắc phục lỗi ??? cho Evaluate
+# =========================
+def draw_evaluation_labels(img_bgr: np.ndarray, labels_info: list, font_path: str = "Roboto-Regular.ttf") -> np.ndarray:
+    if not labels_info:
+        return img_bgr
+
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(img_rgb).convert("RGBA")
+    draw = ImageDraw.Draw(pil_img)
+
+    try:
+        font = ImageFont.truetype(font_path, 14) 
+    except IOError:
+        print(f"[CẢNH BÁO] Không tìm thấy font '{font_path}'.")
+        font = ImageFont.load_default()
+
+    for poly, text in labels_info:
+        pts = np.array(poly, dtype=np.int32)
+        x_min, y_min = int(np.min(pts[:, 0])), int(np.min(pts[:, 1]))
+        x_max, y_max = int(np.max(pts[:, 0])), int(np.max(pts[:, 1]))
+
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+
+        pad = 4
+        text_x = x_min
+        text_y = y_min - text_h - (pad * 2)
+
+        if text_y < 0:
+            text_y = y_max + 2
+
+        # Màu nền mờ đen
+        bg_rect = [text_x, text_y, text_x + text_w + (pad * 2), text_y + text_h + (pad * 2)]
+        draw.rectangle(bg_rect, fill=(0, 0, 0, 180))
+        
+        # In chữ màu trắng dễ đọc
+        draw.text((text_x + pad, text_y + pad - 2), text, font=font, fill=(255, 255, 255, 255))
+
+    final_img = pil_img.convert("RGB")
+    return cv2.cvtColor(np.array(final_img), cv2.COLOR_RGB2BGR)
+
+
+# =========================
 # Main evaluation
 # =========================
 def evaluate(
@@ -225,6 +244,7 @@ def evaluate(
     crop_margin: int = 4,
     crop_height: int = 64,
     save_debug_dir: str = None,
+    font_path: str = "Roboto-Regular.ttf"
 ) -> None:
     with open(gt_json_path, "r", encoding="utf-8") as f:
         gt_data = json.load(f)
@@ -279,6 +299,7 @@ def evaluate(
         image_ems = []
 
         debug_vis = img.copy() if save_debug_dir else None
+        labels_to_draw = [] # Thu thập dữ liệu để vẽ PIL sau
 
         for match_idx, (pi, gi, iou) in enumerate(matches):
             pred_poly = pred_polys[pi]
@@ -305,22 +326,13 @@ def evaluate(
             if debug_vis is not None:
                 pred_contour = np.array(pred_poly, dtype=np.int32).reshape(-1, 1, 2)
                 gt_contour = np.array(gt_item["poly"], dtype=np.int32).reshape(-1, 1, 2)
-
+                
                 cv2.polylines(debug_vis, [pred_contour], True, (0, 255, 0), 2)   # pred xanh lá
                 cv2.polylines(debug_vis, [gt_contour], True, (255, 0, 0), 2)     # gt xanh dương
 
-                label = f"P:{pred_text} | G:{gt_text} | IoU:{iou:.2f}"
-                x, y = pred_poly[0]
-                cv2.putText(
-                    debug_vis,
-                    label,
-                    (x, max(15, y - 5)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45,
-                    (0, 0, 255),
-                    1,
-                    cv2.LINE_AA
-                )
+                # Chỉ gán duy nhất kết quả dự đoán (pred_text) vào nhãn
+                label = pred_text 
+                labels_to_draw.append((pred_poly, label))
 
                 crop_path = os.path.join(
                     save_debug_dir,
@@ -328,7 +340,9 @@ def evaluate(
                 )
                 cv2.imwrite(crop_path, crop)
 
+        # Chạy thuật toán vẽ text tiếng Việt lên ảnh
         if debug_vis is not None:
+            debug_vis = draw_evaluation_labels(debug_vis, labels_to_draw, font_path)
             vis_path = os.path.join(save_debug_dir, f"{os.path.splitext(img_name)[0]}_vis.jpg")
             cv2.imwrite(vis_path, debug_vis)
 
@@ -390,6 +404,7 @@ def main():
     parser.add_argument("--crop_margin", type=int, default=4, help="Extra margin around warped crop")
     parser.add_argument("--crop_height", type=int, default=64, help="Output crop height after warp")
     parser.add_argument("--save_debug_dir", default=None, help="Optional folder to save debug visualizations")
+    parser.add_argument("--font", default="Roboto-Regular.ttf", help="Font file path (.ttf) for rendering Vietnamese text")
     args = parser.parse_args()
 
     evaluate(
@@ -402,6 +417,7 @@ def main():
         crop_margin=args.crop_margin,
         crop_height=args.crop_height,
         save_debug_dir=args.save_debug_dir,
+        font_path=args.font
     )
 
 
