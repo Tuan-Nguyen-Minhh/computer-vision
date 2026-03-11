@@ -1,13 +1,13 @@
 {
   "num_images": 300,
   "total_pred_boxes_before_refine": 46837,
-  "total_pred_boxes_after_refine": 7200,
+  "total_pred_boxes_after_refine": 7022,
   "total_valid_gt_boxes": 7220,
-  "total_matched_boxes": 5005,
-  "match_rate_over_pred": 0.6951388888888889,
-  "match_rate_over_gt": 0.693213296398892,
-  "CER_mean": 0.19697809266990085,
-  "ExactMatch_rate": 0.627972027972028,
+  "total_matched_boxes": 4999,
+  "match_rate_over_pred": 0.7119054400455711,
+  "match_rate_over_gt": 0.692382271468144,
+  "CER_mean": 0.1965177076374316,
+  "ExactMatch_rate": 0.6285257051410282,
   "vietocr_config": "vgg_transformer",
   "crop_margin": 4,
   "crop_height": 64,
@@ -19,7 +19,7 @@
     "min_w": 8.0,
     "min_h": 8.0,
     "min_area": 80.0,
-    "nms_iou_thr": 0.4
+    "nms_iou_thr": 0.3
   },
   "match_iou_thr": 0.5
 }

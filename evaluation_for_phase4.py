@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Tuple
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 from vietocr.tool.predictor import Predictor
 from vietocr.tool.config import Cfg
@@ -322,6 +322,47 @@ def greedy_match_predictions_to_gt(
 
 
 # =========================
+# Visualization
+# =========================
+def draw_evaluation_labels(img_bgr: np.ndarray, labels_info: list, font_path: str = "Roboto-Regular.ttf") -> np.ndarray:
+    if not labels_info:
+        return img_bgr
+
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(img_rgb).convert("RGBA")
+    draw = ImageDraw.Draw(pil_img)
+
+    try:
+        font = ImageFont.truetype(font_path, 14)
+    except IOError:
+        print(f"[CẢNH BÁO] Không tìm thấy font '{font_path}'.")
+        font = ImageFont.load_default()
+
+    for poly, text in labels_info:
+        pts = np.array(poly, dtype=np.int32)
+        x_min, y_min = int(np.min(pts[:, 0])), int(np.min(pts[:, 1]))
+        x_max, y_max = int(np.max(pts[:, 0])), int(np.max(pts[:, 1]))
+
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+
+        pad = 4
+        text_x = x_min
+        text_y = y_min - text_h - (pad * 2)
+
+        if text_y < 0:
+            text_y = y_max + 2
+
+        bg_rect = [text_x, text_y, text_x + text_w + (pad * 2), text_y + text_h + (pad * 2)]
+        draw.rectangle(bg_rect, fill=(0, 0, 0, 180))
+        draw.text((text_x + pad, text_y + pad - 2), text, font=font, fill=(255, 255, 255, 255))
+
+    final_img = pil_img.convert("RGB")
+    return cv2.cvtColor(np.array(final_img), cv2.COLOR_RGB2BGR)
+
+
+# =========================
 # Main evaluation
 # =========================
 def evaluate(
@@ -340,6 +381,7 @@ def evaluate(
     min_area: float = 80.0,
     nms_iou_thr: float = 0.4,
     save_debug_dir: str = None,
+    font_path: str = "Roboto-Regular.ttf"
 ) -> None:
     with open(gt_json_path, "r", encoding="utf-8") as f:
         gt_data = json.load(f)
@@ -418,6 +460,7 @@ def evaluate(
         image_ems = []
 
         debug_vis = img.copy() if save_debug_dir else None
+        labels_to_draw = []
 
         for match_idx, (pi, gi, iou) in enumerate(matches):
             pred_poly = pred_polys[pi]
@@ -459,18 +502,8 @@ def evaluate(
                 cv2.polylines(debug_vis, [pred_contour], True, (0, 255, 0), 2)
                 cv2.polylines(debug_vis, [gt_contour], True, (255, 0, 0), 2)
 
-                label = f"P:{pred_text} | G:{gt_text} | IoU:{iou:.2f}"
-                x, y = pred_poly[0]
-                cv2.putText(
-                    debug_vis,
-                    label,
-                    (x, max(15, y - 5)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45,
-                    (0, 0, 255),
-                    1,
-                    cv2.LINE_AA
-                )
+                label = pred_text
+                labels_to_draw.append((pred_poly, label))
 
                 crop_path = os.path.join(
                     save_debug_dir,
@@ -479,6 +512,7 @@ def evaluate(
                 cv2.imwrite(crop_path, crop_for_ocr)
 
         if debug_vis is not None:
+            debug_vis = draw_evaluation_labels(debug_vis, labels_to_draw, font_path)
             vis_path = os.path.join(save_debug_dir, f"{os.path.splitext(img_name)[0]}_vis.jpg")
             cv2.imwrite(vis_path, debug_vis)
 
@@ -578,6 +612,7 @@ def main():
     parser.add_argument("--nms_iou_thr", type=float, default=0.4, help="Polygon NMS IoU threshold")
 
     parser.add_argument("--save_debug_dir", default=None, help="Folder to save debug visualizations")
+    parser.add_argument("--font", default="Roboto-Regular.ttf", help="Font file path (.ttf) for rendering Vietnamese text")
     args = parser.parse_args()
 
     evaluate(
@@ -596,6 +631,7 @@ def main():
         min_area=args.min_area,
         nms_iou_thr=args.nms_iou_thr,
         save_debug_dir=args.save_debug_dir,
+        font_path=args.font
     )
 
 
